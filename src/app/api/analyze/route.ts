@@ -2,6 +2,12 @@ import { NextResponse } from 'next/server';
 import * as cheerio from 'cheerio';
 import axios from 'axios';
 import { model } from '@/lib/gemini';
+import { z } from 'zod';
+
+// Input validation schema
+const RequestSchema = z.object({
+  url: z.string().url('Invalid URL format')
+});
 
 export async function POST(req: Request) {
   try {
@@ -11,29 +17,58 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // Parse request body with error handling
-    const body = await req.json();
-    const url = body.url;
-
-    // Validate URL
-    if (!url || typeof url !== 'string') {
+    // Parse and validate request body
+    let body;
+    try {
+      body = await req.json();
+    } catch (parseError) {
       return NextResponse.json(
-        { error: 'Invalid or missing URL' }, 
+        { error: 'Invalid JSON body' }, 
         { status: 400 }
       );
     }
 
+    // Validate URL using Zod
+    const validationResult = RequestSchema.safeParse(body);
+    if (!validationResult.success) {
+      return NextResponse.json(
+        { 
+          error: 'Validation failed',
+          details: validationResult.error.errors 
+        }, 
+        { status: 400 }
+      );
+    }
+
+    const { url } = validationResult.data;
+
+    // Fetch and process content
     try {
-      // Fetch webpage content with improved error handling and timeout
+      // Enhanced axios configuration
       const response = await axios.get(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.5'
+          'Accept-Language': 'en-US,en;q=0.5',
+          'Referer': 'https://www.google.com/' // Add referrer to reduce blocking
         },
-        timeout: 10000, // 10-second timeout
-        maxRedirects: 5
+        timeout: 15000, // Increased timeout to 15 seconds
+        maxRedirects: 5,
+        validateStatus: (status) => status >= 200 && status < 300
       });
+
+      // Ensure content type is HTML
+      const contentType = response.headers['content-type']?.toLowerCase();
+      if (!contentType || !contentType.includes('text/html')) {
+        return NextResponse.json(
+          { 
+            success: false, 
+            error: 'Invalid content type',
+            details: `Expected HTML, received: ${contentType}` 
+          },
+          { status: 415 } // Unsupported Media Type
+        );
+      }
 
       // Enhanced content extraction
       const $ = cheerio.load(response.data);
@@ -41,12 +76,13 @@ export async function POST(req: Request) {
       // Remove unnecessary elements more comprehensively
       $('script, style, noscript, iframe, svg, canvas, template, ' + 
         'nav, footer, header, aside, .sidebar, .ads, .advertisement, ' + 
-        '#comments, .related-content').remove();
+        '#comments, .related-content, .cookie-banner').remove();
       
       // More robust main content selection
       const contentSelectors = [
         'main', 'article', '.content', '.documentation', 
-        '.docs-content', '#main-content', '.page-content'
+        '.docs-content', '#main-content', '.page-content',
+        '.markdown-body', '#readme'
       ];
 
       let mainContent = '';
@@ -66,10 +102,23 @@ export async function POST(req: Request) {
         .replace(/\s+/g, ' ')
         .replace(/\n\s*\n/g, '\n')
         .replace(/\[.*?\]/g, '') // Remove bracketed content
+        .replace(/\s{2,}/g, ' ') // Remove excessive whitespace
         .trim()
-        .substring(0, 7000); // Limit to 7000 chars to avoid token limits
+        .substring(0, 8000); // Increased to 8000 chars
 
-      // More specific analysis prompt
+      // Safeguard against empty content
+      if (cleanContent.length < 50) {
+        return NextResponse.json(
+          { 
+            success: false, 
+            error: 'Insufficient content extracted',
+            details: 'Unable to find meaningful content on the page' 
+          },
+          { status: 422 } // Unprocessable Entity
+        );
+      }
+
+      // More specific analysis prompt with error handling
       const prompt = `
       Comprehensively analyze this technical documentation. Provide a structured, detailed summary:
 
@@ -107,15 +156,20 @@ export async function POST(req: Request) {
       const chatSession = await model.startChat({
         history: [],
         generationConfig: {
-          temperature: 0.6, // Slightly reduced for more consistent output
+          temperature: 0.6,
           topP: 0.85,
           topK: 50,
           maxOutputTokens: 8192,
         },
       });
 
-      // Process analysis with error handling
-      const result = await chatSession.sendMessage(prompt);
+      // Process analysis with timeout
+      const analysisPromise = chatSession.sendMessage(prompt);
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Analysis timed out')), 45000)
+      );
+
+      const result = await Promise.race([analysisPromise, timeoutPromise]);
 
       // Return comprehensive response
       return NextResponse.json({
@@ -131,16 +185,16 @@ export async function POST(req: Request) {
       });
 
     } catch (error) {
-      // Improved error logging and handling
+      // Comprehensive error handling
       console.error('Content Processing Error:', error);
       
-      // Differentiate between different types of errors
       if (axios.isAxiosError(error)) {
         return NextResponse.json(
           { 
             success: false, 
             error: 'Network or URL access error',
-            details: error.message 
+            details: error.message,
+            status: error.response?.status || 500
           },
           { status: error.response?.status || 500 }
         );
@@ -150,20 +204,20 @@ export async function POST(req: Request) {
         { 
           success: false, 
           error: 'Failed to process documentation',
-          details: (error as Error).message 
+          details: error instanceof Error ? error.message : 'Unknown error'
         },
         { status: 500 }
       );
     }
 
   } catch (error) {
-    // Catch-all error handler for request processing
+    // Catch-all error handler
     console.error('Route Processing Error:', error);
     return NextResponse.json(
       { 
         success: false, 
         error: 'Internal server error',
-        details: (error as Error).message 
+        details: error instanceof Error ? error.message : 'Unknown error'
       },
       { status: 500 }
     );
