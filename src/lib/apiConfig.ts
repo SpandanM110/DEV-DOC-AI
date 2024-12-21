@@ -1,5 +1,6 @@
 import axios, { AxiosRequestConfig, ResponseType } from 'axios';
 
+// Create an Axios request config
 const fetchConfig: AxiosRequestConfig = {
    timeout: 5000,
    headers: {
@@ -14,7 +15,7 @@ const fetchConfig: AxiosRequestConfig = {
    },
    validateStatus: () => true,
    maxRedirects: 5,
-   responseType: 'json', // No need for 'as ResponseType', 'json' is a valid ResponseType
+   responseType: ResponseType.json, // Use ResponseType.json directly
 };
 
 // Your axios request
