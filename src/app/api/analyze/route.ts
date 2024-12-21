@@ -4,36 +4,61 @@ import axios from 'axios';
 import { model } from '@/lib/gemini';
 import { z } from 'zod';
 
+// Enhanced logging utility
+const logError = (context: string, error: unknown) => {
+  console.error(`[${context}] Error:`, 
+    error instanceof Error 
+      ? { message: error.message, stack: error.stack } 
+      : error
+  );
+};
+
 // Input validation schema
 const RequestSchema = z.object({
-  url: z.string().url('Invalid URL format')
+  url: z.string().url('Invalid URL format').refine(
+    (url) => {
+      try {
+        const parsedUrl = new URL(url);
+        return ['http:', 'https:'].includes(parsedUrl.protocol);
+      } catch {
+        return false;
+      }
+    }, 
+    { message: 'Only HTTP and HTTPS protocols are allowed' }
+  )
 });
 
 export async function POST(req: Request) {
+  const startTime = Date.now();
+
   try {
-    // Validate authorization header
+    // Authorization check
     const authHeader = req.headers.get('authorization');
     if (!authHeader?.startsWith('Bearer ')) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // Parse and validate request body
+    // Parse request body
     let body;
     try {
       body = await req.json();
-    } catch {
+    } catch (parseError) {
+      logError('Request Parsing', parseError);
       return NextResponse.json(
-        { error: 'Invalid JSON body' }, 
+        { 
+          error: 'Invalid request body',
+          details: parseError instanceof Error ? parseError.message : 'Parsing failed'
+        }, 
         { status: 400 }
       );
     }
 
-    // Validate URL using Zod
+    // Validate URL
     const validationResult = RequestSchema.safeParse(body);
     if (!validationResult.success) {
       return NextResponse.json(
         { 
-          error: 'Validation failed',
+          error: 'URL Validation Failed',
           details: validationResult.error.errors 
         }, 
         { status: 400 }
@@ -42,128 +67,135 @@ export async function POST(req: Request) {
 
     const { url } = validationResult.data;
 
-    // Fetch and process content
+    // Fetch webpage content
+    let response;
     try {
-      // Enhanced axios configuration
-      const response = await axios.get(url, {
+      response = await axios.get(url, {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
           'Accept-Language': 'en-US,en;q=0.5',
-          'Referer': 'https://www.google.com/' // Add referrer to reduce blocking
+          'Referer': 'https://www.google.com/'
         },
-        timeout: 15000, // Increased timeout to 15 seconds
+        timeout: 15000,
         maxRedirects: 5,
         validateStatus: (status) => status >= 200 && status < 300
       });
+    } catch (fetchError) {
+      logError('Content Fetch', fetchError);
+      return NextResponse.json(
+        { 
+          error: 'Failed to fetch content',
+          details: fetchError instanceof Error ? fetchError.message : 'Unknown fetch error'
+        },
+        { status: 500 }
+      );
+    }
 
-      // Ensure content type is HTML
-      const contentType = response.headers['content-type']?.toLowerCase();
-      if (!contentType || !contentType.includes('text/html')) {
-        return NextResponse.json(
-          { 
-            success: false, 
-            error: 'Invalid content type',
-            details: `Expected HTML, received: ${contentType}` 
-          },
-          { status: 415 } // Unsupported Media Type
-        );
+    // Content type validation
+    const contentType = response.headers['content-type']?.toLowerCase();
+    if (!contentType || !contentType.includes('text/html')) {
+      return NextResponse.json(
+        { 
+          error: 'Invalid content type',
+          details: `Expected HTML, received: ${contentType}` 
+        },
+        { status: 415 }
+      );
+    }
+
+    // Content extraction
+    const $ = cheerio.load(response.data);
+    
+    // Remove unnecessary elements
+    $('script, style, noscript, iframe, svg, canvas, template, ' + 
+      'nav, footer, header, aside, .sidebar, .ads, .advertisement, ' + 
+      '#comments, .related-content, .cookie-banner').remove();
+    
+    // Content selection
+    const contentSelectors = [
+      'main', 'article', '.content', '.documentation', 
+      '.docs-content', '#main-content', '.page-content',
+      '.markdown-body', '#readme'
+    ];
+
+    let mainContent = '';
+    for (const selector of contentSelectors) {
+      const content = $(selector).text();
+      if (content && content.trim().length > 100) {
+        mainContent = content;
+        break;
       }
+    }
 
-      // Enhanced content extraction
-      const $ = cheerio.load(response.data);
-      
-      // Remove unnecessary elements more comprehensively
-      $('script, style, noscript, iframe, svg, canvas, template, ' + 
-        'nav, footer, header, aside, .sidebar, .ads, .advertisement, ' + 
-        '#comments, .related-content, .cookie-banner').remove();
-      
-      // More robust main content selection
-      const contentSelectors = [
-        'main', 'article', '.content', '.documentation', 
-        '.docs-content', '#main-content', '.page-content',
-        '.markdown-body', '#readme'
-      ];
+    // Fallback to body
+    mainContent = mainContent || $('body').text();
 
-      let mainContent = '';
-      for (const selector of contentSelectors) {
-        const content = $(selector).text();
-        if (content && content.trim().length > 100) {
-          mainContent = content;
-          break;
-        }
-      }
+    // Content cleaning
+    const cleanContent = mainContent
+      .replace(/\s+/g, ' ')
+      .replace(/\n\s*\n/g, '\n')
+      .replace(/\[.*?\]/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim()
+      .substring(0, 8000);
 
-      // Fallback to body if no content found
-      mainContent = mainContent || $('body').text();
+    // Validate content
+    if (cleanContent.length < 50) {
+      return NextResponse.json(
+        { 
+          error: 'Insufficient content',
+          details: 'Unable to extract meaningful text' 
+        },
+        { status: 422 }
+      );
+    }
 
-      // Enhanced content cleaning
-      const cleanContent = mainContent
-        .replace(/\s+/g, ' ')
-        .replace(/\n\s*\n/g, '\n')
-        .replace(/\[.*?\]/g, '') // Remove bracketed content
-        .replace(/\s{2,}/g, ' ') // Remove excessive whitespace
-        .trim()
-        .substring(0, 8000); // Increased to 8000 chars
-
-      // Safeguard against empty content
-      if (cleanContent.length < 50) {
-        return NextResponse.json(
-          { 
-            success: false, 
-            error: 'Insufficient content extracted',
-            details: 'Unable to find meaningful content on the page' 
-          },
-          { status: 422 } // Unprocessable Entity
-        );
-      }
-
-      // More specific analysis prompt with error handling
+    // Gemini analysis
+    try {
       const prompt = `
-      Comprehensively analyze this technical documentation. Provide a structured, detailed summary:
+      Provide a comprehensive technical documentation summary:
 
-      1. Overview & Core Concepts:
-         - Precise technology/library description
-         - Fundamental principles
-         - Target use cases
+      CONTEXT: ${cleanContent}
 
-      2. Technical Capabilities:
-         - Detailed feature breakdown
-         - Unique selling points
-         - Integration possibilities
+      ANALYSIS REQUIREMENTS:
+      1. Technology Overview
+         - Precise description
+         - Core principles
+         - Use cases
 
-      3. Practical Implementation:
-         - Comprehensive setup guide
-         - Dependency requirements
-         - Configuration options
+      2. Key Technical Capabilities
+         - Feature breakdown
+         - Unique aspects
+         - Integration potential
 
-      4. Advanced Code Patterns:
-         - Complex usage scenarios
-         - Performance optimization techniques
-         - Error handling strategies
+      3. Implementation Guidance
+         - Setup instructions
+         - Configuration details
+         - Dependency management
 
-      5. Expert-Level Insights:
-         - Common architectural patterns
-         - Scalability considerations
+      4. Advanced Patterns
+         - Complex scenarios
+         - Optimization techniques
+         - Error handling
+
+      5. Expert Insights
+         - Architectural considerations
+         - Scalability strategies
          - Potential limitations
-
-      Documentation Context: ${cleanContent}
-      
-      Format response with clear, structured markdown. Prioritize technical depth and practical applicability.
       `;
 
-      // Configure Gemini with more robust generation settings
+      // Start chat session
       const chatSession = await model.startChat({
         history: [],
         generationConfig: {
           temperature: 0.6,
           topP: 0.85,
-          topK: 50,
           maxOutputTokens: 8192,
-        },
+        }
       });
 
-      // Process analysis with timeout
+      // Generate content with timeout
       const analysisPromise = chatSession.sendMessage(prompt);
       const timeoutPromise = new Promise((_, reject) => 
         setTimeout(() => reject(new Error('Analysis timed out')), 45000)
@@ -171,53 +203,40 @@ export async function POST(req: Request) {
 
       const result = await Promise.race([analysisPromise, timeoutPromise]);
 
-      // Return comprehensive response
+      // Return response
       return NextResponse.json({
         success: true,
-        analysis: (result as { response: { text: () => string } }).response.text(),
+        analysis: result.response.text(),
         content: cleanContent,
         metadata: {
           url,
           timestamp: new Date().toISOString(),
-          contentLength: cleanContent.length,
-          sourceContentLength: response.data.length
+          processingTime: Date.now() - startTime,
+          contentLength: cleanContent.length
         }
       });
 
-    } catch (error) {
-      // Comprehensive error handling
-      console.error('Content Processing Error:', error);
-      
-      if (axios.isAxiosError(error)) {
-        return NextResponse.json(
-          { 
-            success: false, 
-            error: 'Network or URL access error',
-            details: error.message,
-            status: error.response?.status || 500
-          },
-          { status: error.response?.status || 500 }
-        );
-      }
-
+    } catch (analysisError) {
+      logError('Gemini Analysis', analysisError);
       return NextResponse.json(
         { 
-          success: false, 
-          error: 'Failed to process documentation',
-          details: error instanceof Error ? error.message : 'Unknown error'
+          error: 'Analysis failed',
+          details: analysisError instanceof Error 
+            ? analysisError.message 
+            : 'Unexpected Gemini API error'
         },
         { status: 500 }
       );
     }
 
-  } catch (error) {
-    // Catch-all error handler
-    console.error('Route Processing Error:', error);
+  } catch (unexpectedError) {
+    logError('Unexpected Route Error', unexpectedError);
     return NextResponse.json(
       { 
-        success: false, 
         error: 'Internal server error',
-        details: error instanceof Error ? error.message : 'Unknown error'
+        details: unexpectedError instanceof Error 
+          ? unexpectedError.message 
+          : 'Unknown unexpected error'
       },
       { status: 500 }
     );
