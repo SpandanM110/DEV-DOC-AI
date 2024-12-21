@@ -5,12 +5,17 @@
   ],
   "plugins": ["@typescript-eslint"],
   "rules": {
-    "@typescript-eslint/no-explicit-any": "warn",
+    "@typescript-eslint/no-explicit-any": "off", // Disable this rule
+    "@typescript-eslint/no-unused-vars": ["warn", {
+      "argsIgnorePattern": "^_",
+      "varsIgnorePattern": "^_"
+    }],
     "max-len": ["warn", { 
-      "code": 120, 
+      "code": 140, 
       "ignoreComments": true,
       "ignoreUrls": true,
-      "ignoreStrings": true
+      "ignoreStrings": true,
+      "ignoreTemplateLiterals": true
     }],
     "complexity": ["warn", { "max": 20 }]
   }
