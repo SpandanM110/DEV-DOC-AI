@@ -16,11 +16,11 @@ const createFetchConfig = () => ({
     'DNT': '1',
     'Sec-Fetch-Dest': 'document',
     'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'cross-site'
+    'Sec-Fetch-Site': 'cross-site',
   },
   validateStatus: () => true, // Accept all status codes
   maxRedirects: 5,
-  responseType: 'text'
+  responseType: 'text',
 });
 
 // URL validation schema
@@ -33,20 +33,20 @@ const UrlSchema = z.object({
       } catch {
         return false;
       }
-    }, 
+    },
     { message: 'Only HTTP and HTTPS protocols are allowed' }
-  )
+  ),
 });
 
 // Enhanced error logging
 const logError = (context: string, error: unknown): void => {
-  console.error(`[${context}] Error Details:`, 
-    error instanceof Error 
-      ? { 
-          message: error.message, 
+  console.error(`[${context}] Error Details:`,
+    error instanceof Error
+      ? {
+          message: error.message,
           name: error.name,
-          stack: error.stack 
-        } 
+          stack: error.stack,
+        }
       : String(error)
   );
 };
@@ -56,30 +56,16 @@ export async function POST(req: Request) {
 
   try {
     // Parse request body
-    let body;
-    try {
-      body = await req.json();
-    } catch (parseError) {
-      logError('Request Parsing', parseError);
-      return NextResponse.json(
-        { 
-          error: 'Invalid request body',
-          details: parseError instanceof Error 
-            ? parseError.message 
-            : 'Unable to parse JSON body'
-        }, 
-        { status: 400 }
-      );
-    }
+    const body = await req.json();
 
     // Validate URL
     const validationResult = UrlSchema.safeParse(body);
     if (!validationResult.success) {
       return NextResponse.json(
-        { 
+        {
           error: 'URL Validation Failed',
-          details: validationResult.error.errors 
-        }, 
+          details: validationResult.error.errors,
+        },
         { status: 400 }
       );
     }
@@ -91,16 +77,28 @@ export async function POST(req: Request) {
     try {
       const fetchConfig = createFetchConfig();
       const response = await axios.get(url, fetchConfig);
+
+      if (response.status >= 400) {
+        return NextResponse.json(
+          {
+            error: 'Failed to fetch content',
+            details: `HTTP Status ${response.status}`,
+            url,
+          },
+          { status: 500 }
+        );
+      }
+
       responseData = response.data;
     } catch (fetchError) {
       logError('Content Fetch', fetchError);
       return NextResponse.json(
-        { 
+        {
           error: 'Failed to fetch content',
-          details: fetchError instanceof Error 
-            ? fetchError.message 
+          details: fetchError instanceof Error
+            ? fetchError.message
             : 'Unknown fetch error',
-          url
+          url,
         },
         { status: 500 }
       );
@@ -109,10 +107,10 @@ export async function POST(req: Request) {
     // Validate response data
     if (!responseData || typeof responseData !== 'string') {
       return NextResponse.json(
-        { 
+        {
           error: 'Invalid content',
           details: 'No meaningful content received',
-          url
+          url,
         },
         { status: 422 }
       );
@@ -120,17 +118,17 @@ export async function POST(req: Request) {
 
     // Content extraction
     const $ = cheerio.load(responseData);
-    
+
     // Remove unnecessary elements
-    $('script, style, noscript, iframe, svg, canvas, template, ' + 
-      'nav, footer, header, aside, .sidebar, .ads, .advertisement, ' + 
+    $('script, style, noscript, iframe, svg, canvas, template, ' +
+      'nav, footer, header, aside, .sidebar, .ads, .advertisement, ' +
       '#comments, .related-content, .cookie-banner').remove();
-    
+
     // Content selection strategy
     const contentSelectors = [
-      'main', 'article', '.content', '.documentation', 
-      '.docs-contents', '#main-content', '.page-content', 
-      '.markdown-body', '#readme', 'body'
+      'main', 'article', '.content', '.documentation',
+      '.docs-contents', '#main-content', '.page-content',
+      '.markdown-body', '#readme', 'body',
     ];
 
     let mainContent = '';
@@ -153,11 +151,11 @@ export async function POST(req: Request) {
     // Content validation
     if (cleanContent.length < 100) {
       return NextResponse.json(
-        { 
+        {
           error: 'Insufficient content',
           details: 'Unable to extract meaningful text',
           url,
-          extractedLength: cleanContent.length
+          extractedLength: cleanContent.length,
         },
         { status: 422 }
       );
@@ -171,18 +169,17 @@ export async function POST(req: Request) {
         url,
         timestamp: new Date().toISOString(),
         processingTime: Date.now() - startTime,
-        contentLength: cleanContent.length
-      }
+        contentLength: cleanContent.length,
+      },
     });
-
   } catch (unexpectedError) {
     logError('Unexpected Route Error', unexpectedError);
     return NextResponse.json(
-      { 
+      {
         error: 'Internal server error',
-        details: unexpectedError instanceof Error 
-          ? unexpectedError.message 
-          : 'Unhandled unexpected error'
+        details: unexpectedError instanceof Error
+          ? unexpectedError.message
+          : 'Unhandled unexpected error',
       },
       { status: 500 }
     );
