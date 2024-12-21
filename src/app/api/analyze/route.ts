@@ -1,4 +1,3 @@
-// src/app/api/analyze/route.ts
 import { NextResponse } from 'next/server';
 import * as cheerio from 'cheerio';
 import axios from 'axios';
@@ -116,7 +115,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // Content extraction
+    // Content extraction with cleaner, more efficient approach
     const $ = cheerio.load(responseData);
 
     // Remove unnecessary elements
@@ -124,7 +123,7 @@ export async function POST(req: Request) {
       'nav, footer, header, aside, .sidebar, .ads, .advertisement, ' +
       '#comments, .related-content, .cookie-banner').remove();
 
-    // Content selection strategy
+    // Define content selectors
     const contentSelectors = [
       'main', 'article', '.content', '.documentation',
       '.docs-contents', '#main-content', '.page-content',
@@ -140,7 +139,7 @@ export async function POST(req: Request) {
       }
     }
 
-    // Content cleaning
+    // Clean and trim the content
     const cleanContent = mainContent
       .replace(/\s+/g, ' ')
       .replace(/\n\s*\n/g, '\n')
@@ -161,7 +160,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // Basic response
+    // Successful response with metadata
     return NextResponse.json({
       success: true,
       content: cleanContent,
