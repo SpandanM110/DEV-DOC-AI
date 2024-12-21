@@ -1,10 +1,11 @@
+// src/app/api/analyze/route.ts
 import { NextResponse } from 'next/server';
 import * as cheerio from 'cheerio';
 import axios from 'axios';
 import { model } from '@/lib/gemini';
 import { z } from 'zod';
 
-// Simplified complexity to reduce ESLint warnings
+// Simplified content extraction function
 const extractMainContent = ($: cheerio.Root): string => {
   const contentSelectors = [
     'main', 'article', '.content', '.documentation', 
@@ -108,8 +109,8 @@ export async function POST(req: Request) {
       'nav, footer, header, aside, .sidebar, .ads, .advertisement, ' + 
       '#comments, .related-content').remove();
     
-    // Extract main content
-    let mainContent = extractMainContent($);
+    // Extract main content (use const as suggested by ESLint)
+    const mainContent = extractMainContent($);
 
     // Content cleaning
     const cleanContent = mainContent
