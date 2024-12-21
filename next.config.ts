@@ -5,6 +5,11 @@ const nextConfig: NextConfig = {
     domains: ["lh3.googleusercontent.com"],
   },
   
+  // Corrected experimental configuration
+  experimental: {
+    // Removed incorrect optimizePackageImports
+  },
+
   // Security headers
   async headers() {
     return [
@@ -47,36 +52,17 @@ const nextConfig: NextConfig = {
     ];
   },
 
-  // Performance and build optimizations
-  productionBrowserSourceMaps: false,
-  
   // Webpack configurations
   webpack: (config, { isServer }) => {
-    // Additional webpack optimizations
+    // Optimization configurations
     config.optimization.minimize = true;
     
-    // Server-side specific optimizations
     if (isServer) {
       config.optimization.concatenateModules = true;
     }
 
     return config;
-  },
-
-  // Experimental features
-  experimental: {
-    optimizePackageImports: true,
-    serverComponentsExternalPackages: ['@google/generative-ai'],
-    optimisticClientCache: true,
-  },
-
-  // Logging and error reporting
-  logging: {
-    level: 'error'
-  },
-
-  // Runtime configurations
-  runtime: 'nodejs',
+  }
 };
 
 export default nextConfig;
