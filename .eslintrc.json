@@ -5,15 +5,13 @@
   ],
   "plugins": ["@typescript-eslint"],
   "rules": {
-    "complexity": ["warn", { "max": 20 }],
+    "@typescript-eslint/no-explicit-any": "warn",
     "max-len": ["warn", { 
       "code": 120, 
       "ignoreComments": true,
       "ignoreUrls": true,
       "ignoreStrings": true
     }],
-    "@typescript-eslint/no-explicit-any": "warn",
-    "no-console": ["warn", { "allow": ["warn", "error"] }],
-    "prefer-const": "error"
+    "complexity": ["warn", { "max": 20 }]
   }
 }

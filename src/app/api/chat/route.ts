@@ -1,10 +1,10 @@
 // src/app/api/analyze/route.ts
 import { NextResponse } from 'next/server';
 import * as cheerio from 'cheerio';
-import axios from 'axios';
+import axios, { AxiosError, AxiosResponse } from 'axios';
 import { z } from 'zod';
 
-// Enhanced logging utility
+// Enhanced type-safe logging utility
 const logError = (context: string, error: unknown): void => {
   console.error(`[${context}] Error Details:`, 
     error instanceof Error 
@@ -13,7 +13,7 @@ const logError = (context: string, error: unknown): void => {
           name: error.name,
           stack: error.stack 
         } 
-      : error
+      : String(error)
   );
 };
 
@@ -51,13 +51,20 @@ const createAxiosInstance = () => {
   });
 };
 
+// Type definition for fetch error
+interface FetchErrorResponse {
+  url?: string;
+  status?: number;
+  message: string;
+}
+
 export async function POST(req: Request) {
   const startTime = Date.now();
   const axiosInstance = createAxiosInstance();
 
   try {
     // Parse request body with enhanced error handling
-    let body;
+    let body: { url: string };
     try {
       body = await req.json();
     } catch (parseError) {
@@ -88,44 +95,39 @@ export async function POST(req: Request) {
     const { url } = validationResult.data;
 
     // Advanced fetch configuration
-    let response;
+    let response: AxiosResponse;
     try {
       response = await axiosInstance.get(url);
-    } catch (fetchError: any) {
+    } catch (fetchError) {
+      // Type-safe error handling
+      const errorResponse: FetchErrorResponse = {
+        url: url,
+        message: 'Unknown error occurred'
+      };
+
+      if (fetchError instanceof AxiosError) {
+        if (fetchError.response) {
+          errorResponse.status = fetchError.response.status;
+          errorResponse.message = `HTTP Error ${fetchError.response.status}`;
+        } else if (fetchError.request) {
+          errorResponse.status = 504;
+          errorResponse.message = 'No response received from server';
+        } else {
+          errorResponse.status = 500;
+          errorResponse.message = fetchError.message;
+        }
+      }
+
       logError('Content Fetch', fetchError);
 
-      // Comprehensive error handling
-      if (fetchError.response) {
-        return NextResponse.json(
-          { 
-            error: 'Failed to fetch content',
-            details: `HTTP Error ${fetchError.response.status}`,
-            url: fetchError.config?.url,
-            fullError: fetchError.toString()
-          },
-          { status: fetchError.response.status || 500 }
-        );
-      } else if (fetchError.request) {
-        return NextResponse.json(
-          { 
-            error: 'No response received',
-            details: 'The target server did not respond',
-            url,
-            fullError: fetchError.toString()
-          },
-          { status: 504 } // Gateway Timeout
-        );
-      } else {
-        return NextResponse.json(
-          { 
-            error: 'Request setup failed',
-            details: fetchError.message,
-            url,
-            fullError: fetchError.toString()
-          },
-          { status: 500 }
-        );
-      }
+      return NextResponse.json(
+        { 
+          error: 'Failed to fetch content',
+          details: errorResponse.message,
+          url: errorResponse.url
+        },
+        { status: errorResponse.status || 500 }
+      );
     }
 
     // Ensure we have response data
@@ -186,7 +188,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // Provide basic analysis without AI
+    // Provide basic analysis
     return NextResponse.json({
       success: true,
       analysis: 'Basic content extraction successful',
