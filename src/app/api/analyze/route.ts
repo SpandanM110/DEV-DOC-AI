@@ -1,9 +1,7 @@
-// src/app/api/analyze/route.ts
 import { NextResponse } from 'next/server';
 import * as cheerio from 'cheerio';
 import axios from 'axios';
 import { model } from '@/lib/gemini';
-import { auth } from '@/lib/firebase';
 
 export async function POST(req: Request) {
   try {
@@ -106,10 +104,10 @@ export async function POST(req: Request) {
       );
     }
 
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error in analyze route:', error);
     return NextResponse.json(
-      { success: false, error: error.message || 'Internal server error' },
+      { success: false, error: (error as Error).message || 'Internal server error' },
       { status: 500 }
     );
   }

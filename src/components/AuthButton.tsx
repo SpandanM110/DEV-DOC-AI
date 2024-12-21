@@ -1,9 +1,9 @@
-// src/components/AuthButton.tsx
 'use client';
 
 import { useState, useEffect } from 'react';
 import { auth } from '@/lib/firebase';
 import { signInWithPopup, GoogleAuthProvider, signOut, User } from 'firebase/auth';
+import Image from 'next/image';
 
 export default function AuthButton() {
   const [loading, setLoading] = useState(false);
@@ -53,11 +53,13 @@ export default function AuthButton() {
   return user ? (
     <div className="flex items-center gap-4">
       {user.photoURL && (
-        <img
+        <Image
           src={user.photoURL}
           alt="Profile"
           className="w-8 h-8 rounded-full"
           referrerPolicy="no-referrer"
+          width={32}
+          height={32}
         />
       )}
       <div className="hidden md:block">

@@ -1,4 +1,3 @@
-// src/app/api/chat/route.ts
 import { NextResponse } from 'next/server';
 import { model } from '@/lib/gemini';
 
@@ -29,12 +28,12 @@ Response format:
       success: true,
       response: result.response.text(),
     });
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error in chat:', error);
     return NextResponse.json(
       { 
         success: false, 
-        error: error.message || 'Failed to process your question' 
+        error: (error as Error).message || 'Failed to process your question' 
       },
       { status: 500 }
     );
