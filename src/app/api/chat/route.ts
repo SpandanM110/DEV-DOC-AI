@@ -2,12 +2,11 @@
 import { NextResponse } from 'next/server';
 import * as cheerio from 'cheerio';
 import axios from 'axios';
-import { model } from '@/lib/gemini';
 import { z } from 'zod';
 
-// Enhanced error logging utility
+// Enhanced logging utility
 const logError = (context: string, error: unknown): void => {
-  console.error(`[${context}] Error:`, 
+  console.error(`[${context}] Error Details:`, 
     error instanceof Error 
       ? { 
           message: error.message, 
@@ -33,8 +32,28 @@ const RequestSchema = z.object({
   )
 });
 
+// Create a custom axios instance with robust defaults
+const createAxiosInstance = () => {
+  return axios.create({
+    timeout: 25000, // 25 seconds
+    maxRedirects: 5,
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Accept': 'text/html,application/xhtml+xml,application/xml',
+      'Accept-Language': 'en-US,en;q=0.5',
+      'Referer': 'https://www.google.com/',
+      'DNT': '1',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'cross-site'
+    },
+    validateStatus: (status) => status >= 200 && status < 500
+  });
+};
+
 export async function POST(req: Request) {
   const startTime = Date.now();
+  const axiosInstance = createAxiosInstance();
 
   try {
     // Parse request body with enhanced error handling
@@ -71,23 +90,7 @@ export async function POST(req: Request) {
     // Advanced fetch configuration
     let response;
     try {
-      response = await axios.get(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml',
-          'Accept-Language': 'en-US,en;q=0.5',
-          'Referer': 'https://www.google.com/',
-          // Additional headers to prevent blocking
-          'DNT': '1',
-          'Sec-Fetch-Dest': 'document',
-          'Sec-Fetch-Mode': 'navigate',
-          'Sec-Fetch-Site': 'cross-site'
-        },
-        timeout: 25000, // Increased timeout to 25 seconds
-        maxRedirects: 5,
-        // More lenient status validation
-        validateStatus: (status) => status >= 200 && status < 500
-      });
+      response = await axiosInstance.get(url);
     } catch (fetchError: any) {
       logError('Content Fetch', fetchError);
 
@@ -183,67 +186,18 @@ export async function POST(req: Request) {
       );
     }
 
-    // Fallback for Gemini configuration
-    if (!model) {
-      return NextResponse.json(
-        { 
-          success: true,
-          analysis: 'AI analysis unavailable',
-          content: cleanContent,
-          metadata: {
-            url,
-            timestamp: new Date().toISOString(),
-            processingTime: Date.now() - startTime
-          }
-        },
-        { status: 200 }
-      );
-    }
-
-    // Gemini analysis with comprehensive error handling
-    try {
-      const prompt = `
-      Provide a structured, concise technical documentation summary:
-
-      CONTEXT: ${cleanContent}
-
-      Summarize:
-      1. Technology Essence
-      2. Key Capabilities
-      3. Implementation Approach
-      4. Practical Applications
-      5. Potential Limitations
-      `;
-
-      // Generate content with explicit error management
-      const generationResult = await model.generateContent(prompt);
-      const analysis = generationResult.response.text();
-
-      return NextResponse.json({
-        success: true,
-        analysis,
-        content: cleanContent,
-        metadata: {
-          url,
-          timestamp: new Date().toISOString(),
-          processingTime: Date.now() - startTime,
-          contentLength: cleanContent.length
-        }
-      });
-
-    } catch (analysisError) {
-      logError('Gemini Analysis', analysisError);
-      return NextResponse.json(
-        { 
-          error: 'Analysis failed',
-          details: analysisError instanceof Error 
-            ? analysisError.message 
-            : 'Unexpected AI processing error',
-          url
-        },
-        { status: 500 }
-      );
-    }
+    // Provide basic analysis without AI
+    return NextResponse.json({
+      success: true,
+      analysis: 'Basic content extraction successful',
+      content: cleanContent,
+      metadata: {
+        url,
+        timestamp: new Date().toISOString(),
+        processingTime: Date.now() - startTime,
+        contentLength: cleanContent.length
+      }
+    });
 
   } catch (unexpectedError) {
     logError('Unexpected Route Error', unexpectedError);
