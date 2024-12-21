@@ -14,7 +14,7 @@ const fetchConfig: AxiosRequestConfig = {
    },
    validateStatus: () => true,
    maxRedirects: 5,
-   responseType: 'json' as ResponseType, // Use valid ResponseType
+   responseType: 'json', // No need for 'as ResponseType', 'json' is a valid ResponseType
 };
 
 // Your axios request
