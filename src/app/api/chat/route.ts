@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import * as cheerio from 'cheerio';
 import axios, { AxiosError, AxiosResponse } from 'axios';
 import { z } from 'zod';
+import { model } from '@/lib/gemini'; // Ensure this import is correct
 
 // Enhanced type-safe logging utility
 const logError = (context: string, error: unknown): void => {
@@ -35,7 +36,7 @@ const RequestSchema = z.object({
 // Create a custom axios instance with robust defaults
 const createAxiosInstance = () => {
   return axios.create({
-    timeout: 25000, // 25 seconds
+    timeout: 30000, // Increased to 30 seconds
     maxRedirects: 5,
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -57,6 +58,33 @@ interface FetchErrorResponse {
   status?: number;
   message: string;
 }
+
+// Advanced content extraction method
+const extractMainContent = ($: cheerio.Root): string => {
+  // More comprehensive content selectors
+  const contentSelectors = [
+    'main', 'article', '.content', '.documentation', 
+    '.docs-contents', '#main-content', '.page-content', 
+    '.markdown-body', '#readme', '.doc-content', 
+    'body'
+  ];
+
+  // Enhanced content extraction logic
+  for (const selector of contentSelectors) {
+    const $content = $(selector);
+    
+    // Remove known non-content elements
+    $content.find('script, style, nav, footer, header, aside, .sidebar, .ads, .advertisement').remove();
+    
+    const content = $content.text().trim();
+    if (content.length > 200) {
+      return content;
+    }
+  }
+
+  // Fallback to full body text if no suitable content found
+  return $('body').text().trim();
+};
 
 export async function POST(req: Request) {
   const startTime = Date.now();
@@ -99,7 +127,7 @@ export async function POST(req: Request) {
     try {
       response = await axiosInstance.get(url);
     } catch (fetchError) {
-      // Type-safe error handling
+      // Comprehensive error handling
       const errorResponse: FetchErrorResponse = {
         url: url,
         message: 'Unknown error occurred'
@@ -145,26 +173,8 @@ export async function POST(req: Request) {
     // Content extraction with robust fallback
     const $ = cheerio.load(response.data);
     
-    // Remove unnecessary elements
-    $('script, style, noscript, iframe, svg, canvas, template, ' + 
-      'nav, footer, header, aside, .sidebar, .ads, .advertisement, ' + 
-      '#comments, .related-content, .cookie-banner').remove();
-    
-    // Comprehensive content selection
-    const contentSelectors = [
-      'main', 'article', '.content', '.documentation', 
-      '.docs-contents', '#main-content', '.page-content', 
-      '.markdown-body', '#readme', 'body'
-    ];
-
-    let mainContent = '';
-    for (const selector of contentSelectors) {
-      const content = $(selector).text();
-      if (content && content.trim().length > 100) {
-        mainContent = content;
-        break;
-      }
-    }
+    // Extract main content
+    const mainContent = extractMainContent($);
 
     // Rigorous content cleaning
     const cleanContent = mainContent
@@ -173,7 +183,7 @@ export async function POST(req: Request) {
       .replace(/[^\x00-\x7F]/g, '') // Remove non-ASCII characters
       .replace(/\s{2,}/g, ' ')
       .trim()
-      .substring(0, 7000);
+      .substring(0, 8000);
 
     // Strict content validation
     if (cleanContent.length < 100) {
@@ -188,10 +198,44 @@ export async function POST(req: Request) {
       );
     }
 
-    // Provide basic analysis
+    // Attempt AI analysis if model is available
+    try {
+      if (model) {
+        const prompt = `
+        Analyze the following technical documentation:
+
+        CONTEXT: ${cleanContent}
+
+        Provide a concise summary covering:
+        1. Core Technology Overview
+        2. Key Features
+        3. Implementation Insights
+        4. Potential Use Cases
+        `;
+
+        const generationResult = await model.generateContent(prompt);
+        const analysis = generationResult.response.text();
+
+        return NextResponse.json({
+          success: true,
+          analysis,
+          content: cleanContent,
+          metadata: {
+            url,
+            timestamp: new Date().toISOString(),
+            processingTime: Date.now() - startTime,
+            contentLength: cleanContent.length
+          }
+        });
+      }
+    } catch (analysisError) {
+      logError('AI Analysis Error', analysisError);
+    }
+
+    // Fallback if AI analysis fails
     return NextResponse.json({
       success: true,
-      analysis: 'Basic content extraction successful',
+      analysis: 'AI analysis unavailable. Basic content extraction completed.',
       content: cleanContent,
       metadata: {
         url,
