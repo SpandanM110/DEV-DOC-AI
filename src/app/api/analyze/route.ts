@@ -21,7 +21,7 @@ export async function POST(req: Request) {
     let body;
     try {
       body = await req.json();
-    } catch (parseError) {
+    } catch {
       return NextResponse.json(
         { error: 'Invalid JSON body' }, 
         { status: 400 }
@@ -174,7 +174,7 @@ export async function POST(req: Request) {
       // Return comprehensive response
       return NextResponse.json({
         success: true,
-        analysis: result.response.text(),
+        analysis: (result as { response: { text: () => string } }).response.text(),
         content: cleanContent,
         metadata: {
           url,
