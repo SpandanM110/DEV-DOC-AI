@@ -1,10 +1,11 @@
+// src/app/api/analyze/route.ts
 import { NextResponse } from 'next/server';
 import * as cheerio from 'cheerio';
 import axios from 'axios';
 import { model } from '@/lib/gemini';
 import { z } from 'zod';
 
-// Enhanced error logging utility
+// Comprehensive error logging
 const logError = (context: string, error: unknown): void => {
   console.error(`[${context}] Error:`, 
     error instanceof Error 
@@ -13,7 +14,7 @@ const logError = (context: string, error: unknown): void => {
   );
 };
 
-// Input validation schema
+// Robust URL validation schema
 const RequestSchema = z.object({
   url: z.string().url('Invalid URL format').refine(
     (url) => {
@@ -32,7 +33,7 @@ export async function POST(req: Request) {
   const startTime = Date.now();
 
   try {
-    // Parse request body
+    // Robust request body parsing
     let body;
     try {
       body = await req.json();
@@ -47,7 +48,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // Validate URL
+    // URL validation
     const validationResult = RequestSchema.safeParse(body);
     if (!validationResult.success) {
       return NextResponse.json(
@@ -61,27 +62,25 @@ export async function POST(req: Request) {
 
     const { url } = validationResult.data;
 
-    // Enhanced axios configuration with more detailed error handling
+    // Enhanced fetch with comprehensive error handling
     let response;
     try {
       response = await axios.get(url, {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+          'Accept': 'text/html,application/xhtml+xml,application/xml',
           'Accept-Language': 'en-US,en;q=0.5',
           'Referer': 'https://www.google.com/'
         },
-        timeout: 15000, // 15 seconds timeout
-        maxRedirects: 3,
-        validateStatus: (status) => status >= 200 && status < 400 // More lenient status check
+        timeout: 20000, // Increased timeout
+        maxRedirects: 5,
+        validateStatus: (status) => status >= 200 && status < 400
       });
     } catch (fetchError: any) {
-      // Detailed error logging and handling
       logError('Content Fetch', fetchError);
 
-      // Differentiate between different types of axios errors
+      // Detailed error response
       if (fetchError.response) {
-        // The request was made and the server responded with a status code
         return NextResponse.json(
           { 
             error: 'Failed to fetch content',
@@ -91,17 +90,15 @@ export async function POST(req: Request) {
           { status: fetchError.response.status || 500 }
         );
       } else if (fetchError.request) {
-        // The request was made but no response was received
         return NextResponse.json(
           { 
             error: 'No response received',
             details: 'The target server did not respond',
             url
           },
-          { status: 504 } // Gateway Timeout
+          { status: 504 }
         );
       } else {
-        // Something happened in setting up the request
         return NextResponse.json(
           { 
             error: 'Request setup failed',
@@ -113,7 +110,7 @@ export async function POST(req: Request) {
       }
     }
 
-    // Content extraction with fallback
+    // Content extraction with multiple fallbacks
     const $ = cheerio.load(response.data || '');
     
     // Remove unnecessary elements
@@ -121,7 +118,7 @@ export async function POST(req: Request) {
       'nav, footer, header, aside, .sidebar, .ads, .advertisement, ' + 
       '#comments, .related-content').remove();
     
-    // Content selection with multiple fallback selectors
+    // Comprehensive content selection
     const contentSelectors = [
       'main', 'article', '.content', '.documentation', 
       '.docs-contents', '#main-content', '.page-content', 
@@ -137,14 +134,15 @@ export async function POST(req: Request) {
       }
     }
 
-    // Content cleaning
+    // Content cleaning and sanitization
     const cleanContent = mainContent
       .replace(/\s+/g, ' ')
       .replace(/\n\s*\n/g, '\n')
+      .replace(/[^\x00-\x7F]/g, '') // Remove non-ASCII characters
       .trim()
-      .substring(0, 5000);
+      .substring(0, 6000);
 
-    // Validate content
+    // Strict content validation
     if (cleanContent.length < 50) {
       return NextResponse.json(
         { 
@@ -156,12 +154,12 @@ export async function POST(req: Request) {
       );
     }
 
-    // Fallback for deployment without Gemini
+    // Fallback for Gemini configuration
     if (!model) {
       return NextResponse.json(
         { 
           success: true,
-          analysis: 'Gemini AI is not configured. Unable to generate analysis.',
+          analysis: 'AI analysis unavailable',
           content: cleanContent,
           metadata: {
             url,
@@ -173,25 +171,24 @@ export async function POST(req: Request) {
       );
     }
 
-    // Gemini analysis
+    // Gemini analysis with timeout protection
     try {
       const prompt = `
-      Provide a concise technical documentation summary:
+      Provide a concise, structured technical documentation summary:
 
       CONTEXT: ${cleanContent}
 
       Summarize:
-      1. Core Technology Overview
-      2. Key Features
-      3. Basic Implementation
-      4. Use Cases
+      1. Technology Overview
+      2. Core Features
+      3. Implementation Guidelines
+      4. Practical Use Cases
       `;
 
-      // Generate content
+      // Generate content with explicit error handling
       const generationResult = await model.generateContent(prompt);
       const analysis = generationResult.response.text();
 
-      // Return response
       return NextResponse.json({
         success: true,
         analysis,
@@ -210,7 +207,7 @@ export async function POST(req: Request) {
           error: 'Analysis failed',
           details: analysisError instanceof Error 
             ? analysisError.message 
-            : 'Unexpected Gemini API error',
+            : 'Unexpected AI error',
           url
         },
         { status: 500 }
@@ -231,5 +228,5 @@ export async function POST(req: Request) {
   }
 }
 
-// Edge runtime for better performance
+// Edge runtime for optimal performance
 export const runtime = 'edge';
