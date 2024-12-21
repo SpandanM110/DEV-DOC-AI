@@ -5,86 +5,119 @@ import { model } from '@/lib/gemini';
 
 export async function POST(req: Request) {
   try {
-    // Get authorization header
+    // Validate authorization header
     const authHeader = req.headers.get('authorization');
     if (!authHeader?.startsWith('Bearer ')) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // Get the request body
-    const { url } = await req.json();
+    // Parse request body with error handling
+    const body = await req.json();
+    const url = body.url;
+
+    // Validate URL
+    if (!url || typeof url !== 'string') {
+      return NextResponse.json(
+        { error: 'Invalid or missing URL' }, 
+        { status: 400 }
+      );
+    }
 
     try {
-      // Fetch webpage content
+      // Fetch webpage content with improved error handling and timeout
       const response = await axios.get(url, {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5'
+        },
+        timeout: 10000, // 10-second timeout
+        maxRedirects: 5
       });
 
+      // Enhanced content extraction
       const $ = cheerio.load(response.data);
       
-      // Remove unnecessary elements
-      $('script, style, nav, footer, header, aside, .sidebar').remove();
+      // Remove unnecessary elements more comprehensively
+      $('script, style, noscript, iframe, svg, canvas, template, ' + 
+        'nav, footer, header, aside, .sidebar, .ads, .advertisement, ' + 
+        '#comments, .related-content').remove();
       
-      // Extract main content
-      const mainContent = $('main, article, .content, .documentation, .docs-content')
-        .text() || $('body').text();
+      // More robust main content selection
+      const contentSelectors = [
+        'main', 'article', '.content', '.documentation', 
+        '.docs-content', '#main-content', '.page-content'
+      ];
 
-      // Clean content
+      let mainContent = '';
+      for (const selector of contentSelectors) {
+        const content = $(selector).text();
+        if (content && content.trim().length > 100) {
+          mainContent = content;
+          break;
+        }
+      }
+
+      // Fallback to body if no content found
+      mainContent = mainContent || $('body').text();
+
+      // Enhanced content cleaning
       const cleanContent = mainContent
         .replace(/\s+/g, ' ')
         .replace(/\n\s*\n/g, '\n')
-        .trim();
+        .replace(/\[.*?\]/g, '') // Remove bracketed content
+        .trim()
+        .substring(0, 7000); // Limit to 7000 chars to avoid token limits
 
-      // Prepare analysis prompt
+      // More specific analysis prompt
       const prompt = `
-      Analyze this developer documentation and provide a structured summary with:
+      Comprehensively analyze this technical documentation. Provide a structured, detailed summary:
 
-      1. Overview & Main Concepts:
-         - Brief description
-         - Key terminology
-         - Core concepts
+      1. Overview & Core Concepts:
+         - Precise technology/library description
+         - Fundamental principles
+         - Target use cases
 
-      2. Key Features & Functionality:
-         - Main capabilities
-         - Important functions
-         - API endpoints (if applicable)
+      2. Technical Capabilities:
+         - Detailed feature breakdown
+         - Unique selling points
+         - Integration possibilities
 
-      3. Setup & Installation:
-         - Prerequisites
-         - Installation steps
-         - Configuration details
+      3. Practical Implementation:
+         - Comprehensive setup guide
+         - Dependency requirements
+         - Configuration options
 
-      4. Code Examples:
-         - Basic usage
-         - Common patterns
-         - Important implementations
+      4. Advanced Code Patterns:
+         - Complex usage scenarios
+         - Performance optimization techniques
+         - Error handling strategies
 
-      5. Best Practices:
-         - Recommended approaches
-         - Common pitfalls
-         - Performance tips
+      5. Expert-Level Insights:
+         - Common architectural patterns
+         - Scalability considerations
+         - Potential limitations
 
-      Documentation content: ${cleanContent.substring(0, 6000)}
+      Documentation Context: ${cleanContent}
       
-      Please format the response with clear headers and bullet points.
+      Format response with clear, structured markdown. Prioritize technical depth and practical applicability.
       `;
 
-      // Get analysis from Gemini
+      // Configure Gemini with more robust generation settings
       const chatSession = await model.startChat({
         history: [],
         generationConfig: {
-          temperature: 0.7,
-          topP: 0.8,
-          topK: 40,
+          temperature: 0.6, // Slightly reduced for more consistent output
+          topP: 0.85,
+          topK: 50,
           maxOutputTokens: 8192,
         },
       });
 
+      // Process analysis with error handling
       const result = await chatSession.sendMessage(prompt);
 
-      // Return successful response
+      // Return comprehensive response
       return NextResponse.json({
         success: true,
         analysis: result.response.text(),
@@ -93,21 +126,45 @@ export async function POST(req: Request) {
           url,
           timestamp: new Date().toISOString(),
           contentLength: cleanContent.length,
+          sourceContentLength: response.data.length
         }
       });
 
     } catch (error) {
-      console.error('Error fetching or processing content:', error);
+      // Improved error logging and handling
+      console.error('Content Processing Error:', error);
+      
+      // Differentiate between different types of errors
+      if (axios.isAxiosError(error)) {
+        return NextResponse.json(
+          { 
+            success: false, 
+            error: 'Network or URL access error',
+            details: error.message 
+          },
+          { status: error.response?.status || 500 }
+        );
+      }
+
       return NextResponse.json(
-        { success: false, error: 'Failed to process documentation' },
+        { 
+          success: false, 
+          error: 'Failed to process documentation',
+          details: (error as Error).message 
+        },
         { status: 500 }
       );
     }
 
   } catch (error) {
-    console.error('Error in analyze route:', error);
+    // Catch-all error handler for request processing
+    console.error('Route Processing Error:', error);
     return NextResponse.json(
-      { success: false, error: (error as Error).message || 'Internal server error' },
+      { 
+        success: false, 
+        error: 'Internal server error',
+        details: (error as Error).message 
+      },
       { status: 500 }
     );
   }
