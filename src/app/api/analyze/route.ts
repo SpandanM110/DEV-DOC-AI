@@ -1,34 +1,16 @@
-// src/app/api/analyze/route.ts
 import { NextResponse } from 'next/server';
 import * as cheerio from 'cheerio';
 import axios from 'axios';
 import { model } from '@/lib/gemini';
 import { z } from 'zod';
 
-// Simplified content extraction function
-const extractMainContent = ($: cheerio.Root): string => {
-  const contentSelectors = [
-    'main', 'article', '.content', '.documentation', 
-    '.docs-contents', '#main-content', '.page-content'
-  ];
-
-  for (const selector of contentSelectors) {
-    const content = $(selector).text();
-    if (content && content.trim().length > 100) {
-      return content;
-    }
-  }
-
-  return $('body').text();
-};
-
-// Simplified error logging
+// Enhanced error logging utility
 const logError = (context: string, error: unknown): void => {
-  const errorMessage = error instanceof Error 
-    ? error.message 
-    : String(error);
-  
-  console.error(`[${context}] Error: ${errorMessage}`);
+  console.error(`[${context}] Error:`, 
+    error instanceof Error 
+      ? { message: error.message, stack: error.stack } 
+      : error
+  );
 };
 
 // Input validation schema
@@ -79,38 +61,81 @@ export async function POST(req: Request) {
 
     const { url } = validationResult.data;
 
-    // Fetch webpage content
+    // Enhanced axios configuration with more detailed error handling
     let response;
     try {
       response = await axios.get(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5',
+          'Referer': 'https://www.google.com/'
         },
-        timeout: 10000,
-        maxRedirects: 3
+        timeout: 15000, // 15 seconds timeout
+        maxRedirects: 3,
+        validateStatus: (status) => status >= 200 && status < 400 // More lenient status check
       });
-    } catch (fetchError) {
+    } catch (fetchError: any) {
+      // Detailed error logging and handling
       logError('Content Fetch', fetchError);
-      return NextResponse.json(
-        { 
-          error: 'Failed to fetch content',
-          details: fetchError instanceof Error ? fetchError.message : 'Unknown fetch error'
-        },
-        { status: 500 }
-      );
+
+      // Differentiate between different types of axios errors
+      if (fetchError.response) {
+        // The request was made and the server responded with a status code
+        return NextResponse.json(
+          { 
+            error: 'Failed to fetch content',
+            details: `HTTP Error ${fetchError.response.status}`,
+            url: fetchError.config.url
+          },
+          { status: fetchError.response.status || 500 }
+        );
+      } else if (fetchError.request) {
+        // The request was made but no response was received
+        return NextResponse.json(
+          { 
+            error: 'No response received',
+            details: 'The target server did not respond',
+            url
+          },
+          { status: 504 } // Gateway Timeout
+        );
+      } else {
+        // Something happened in setting up the request
+        return NextResponse.json(
+          { 
+            error: 'Request setup failed',
+            details: fetchError.message,
+            url
+          },
+          { status: 500 }
+        );
+      }
     }
 
-    // Content extraction
-    const $ = cheerio.load(response.data);
+    // Content extraction with fallback
+    const $ = cheerio.load(response.data || '');
     
     // Remove unnecessary elements
     $('script, style, noscript, iframe, svg, canvas, template, ' + 
       'nav, footer, header, aside, .sidebar, .ads, .advertisement, ' + 
       '#comments, .related-content').remove();
     
-    // Extract main content (use const as suggested by ESLint)
-    const mainContent = extractMainContent($);
+    // Content selection with multiple fallback selectors
+    const contentSelectors = [
+      'main', 'article', '.content', '.documentation', 
+      '.docs-contents', '#main-content', '.page-content', 
+      'body'
+    ];
+
+    let mainContent = '';
+    for (const selector of contentSelectors) {
+      const content = $(selector).text();
+      if (content && content.trim().length > 50) {
+        mainContent = content;
+        break;
+      }
+    }
 
     // Content cleaning
     const cleanContent = mainContent
@@ -124,7 +149,8 @@ export async function POST(req: Request) {
       return NextResponse.json(
         { 
           error: 'Insufficient content',
-          details: 'Unable to extract meaningful text' 
+          details: 'Unable to extract meaningful text',
+          url
         },
         { status: 422 }
       );
@@ -150,18 +176,18 @@ export async function POST(req: Request) {
     // Gemini analysis
     try {
       const prompt = `
-      Provide a brief technical documentation summary:
+      Provide a concise technical documentation summary:
 
       CONTEXT: ${cleanContent}
 
-      Requirements:
-      1. Technology Overview
+      Summarize:
+      1. Core Technology Overview
       2. Key Features
       3. Basic Implementation
-      4. Potential Use Cases
+      4. Use Cases
       `;
 
-      // Generate content with explicit type handling
+      // Generate content
       const generationResult = await model.generateContent(prompt);
       const analysis = generationResult.response.text();
 
@@ -184,7 +210,8 @@ export async function POST(req: Request) {
           error: 'Analysis failed',
           details: analysisError instanceof Error 
             ? analysisError.message 
-            : 'Unexpected Gemini API error'
+            : 'Unexpected Gemini API error',
+          url
         },
         { status: 500 }
       );
