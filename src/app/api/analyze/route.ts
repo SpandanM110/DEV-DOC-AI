@@ -5,30 +5,26 @@ import axios from 'axios';
 import { z } from 'zod';
 import { model } from '@/lib/gemini';
 
-// Utility function for creating Axios instance
-const createAxiosInstance = () => {
-  return axios.create({
-    timeout: 30000, // 30 seconds
-    maxRedirects: 5,
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'Accept': 'text/html,application/xhtml+xml,application/xml',
-      'Accept-Language': 'en-US,en;q=0.5',
-      'Referer': 'https://www.google.com/',
-    },
-    validateStatus: (status) => status >= 200 && status < 500
-  });
-};
+// Comprehensive fetch configuration
+const createFetchConfig = () => ({
+  timeout: 30000, // 30 seconds
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+    'Accept': 'text/html,application/xhtml+xml,application/xml',
+    'Accept-Language': 'en-US,en;q=0.5',
+    'Referer': 'https://www.google.com/',
+    'DNT': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'cross-site'
+  },
+  validateStatus: () => true, // Accept all status codes
+  maxRedirects: 5,
+  responseType: 'text'
+});
 
-// Type definitions
-interface ErrorResponse {
-  url?: string;
-  status?: number;
-  message: string;
-}
-
-// Robust URL validation schema
-const RequestSchema = z.object({
+// URL validation schema
+const UrlSchema = z.object({
   url: z.string().url('Invalid URL format').refine(
     (url) => {
       try {
@@ -42,7 +38,7 @@ const RequestSchema = z.object({
   )
 });
 
-// Enhanced logging utility
+// Enhanced error logging
 const logError = (context: string, error: unknown): void => {
   console.error(`[${context}] Error Details:`, 
     error instanceof Error 
@@ -56,15 +52,28 @@ const logError = (context: string, error: unknown): void => {
 };
 
 export async function POST(req: Request) {
-  const processingStartTime = Date.now();
-  const axiosClient = createAxiosInstance();
+  const startTime = Date.now();
 
   try {
     // Parse request body
-    const body = await req.json();
+    let body;
+    try {
+      body = await req.json();
+    } catch (parseError) {
+      logError('Request Parsing', parseError);
+      return NextResponse.json(
+        { 
+          error: 'Invalid request body',
+          details: parseError instanceof Error 
+            ? parseError.message 
+            : 'Unable to parse JSON body'
+        }, 
+        { status: 400 }
+      );
+    }
 
     // Validate URL
-    const validationResult = RequestSchema.safeParse(body);
+    const validationResult = UrlSchema.safeParse(body);
     if (!validationResult.success) {
       return NextResponse.json(
         { 
@@ -77,35 +86,32 @@ export async function POST(req: Request) {
 
     const { url } = validationResult.data;
 
-    // Fetch webpage content
+    // Enhanced fetch with comprehensive error handling
     let responseData;
     try {
-      const response = await axiosClient.get(url);
+      const fetchConfig = createFetchConfig();
+      const response = await axios.get(url, fetchConfig);
       responseData = response.data;
     } catch (fetchError) {
-      const errorResponse: ErrorResponse = {
-        url,
-        message: 'Failed to fetch content'
-      };
-
       logError('Content Fetch', fetchError);
-
       return NextResponse.json(
         { 
           error: 'Failed to fetch content',
-          details: errorResponse.message,
-          url: errorResponse.url
+          details: fetchError instanceof Error 
+            ? fetchError.message 
+            : 'Unknown fetch error',
+          url
         },
         { status: 500 }
       );
     }
 
-    // Ensure we have response data
-    if (!responseData) {
+    // Validate response data
+    if (!responseData || typeof responseData !== 'string') {
       return NextResponse.json(
         { 
-          error: 'Empty response',
-          details: 'No content received from the URL',
+          error: 'Invalid content',
+          details: 'No meaningful content received',
           url
         },
         { status: 422 }
@@ -118,19 +124,19 @@ export async function POST(req: Request) {
     // Remove unnecessary elements
     $('script, style, noscript, iframe, svg, canvas, template, ' + 
       'nav, footer, header, aside, .sidebar, .ads, .advertisement, ' + 
-      '#comments, .related-content').remove();
+      '#comments, .related-content, .cookie-banner').remove();
     
-    // Content selection
+    // Content selection strategy
     const contentSelectors = [
       'main', 'article', '.content', '.documentation', 
       '.docs-contents', '#main-content', '.page-content', 
-      'body'
+      '.markdown-body', '#readme', 'body'
     ];
 
     let mainContent = '';
     for (const selector of contentSelectors) {
-      const content = $(selector).text();
-      if (content && content.trim().length > 100) {
+      const content = $(selector).text().trim();
+      if (content.length > 100) {
         mainContent = content;
         break;
       }
@@ -140,9 +146,9 @@ export async function POST(req: Request) {
     const cleanContent = mainContent
       .replace(/\s+/g, ' ')
       .replace(/\n\s*\n/g, '\n')
-      .replace(/[^\x00-\x7F]/g, '')
+      .replace(/[^\x00-\x7F]/g, '') // Remove non-ASCII characters
       .trim()
-      .substring(0, 7000);
+      .substring(0, 8000);
 
     // Content validation
     if (cleanContent.length < 100) {
@@ -157,49 +163,14 @@ export async function POST(req: Request) {
       );
     }
 
-    // Attempt AI analysis if model is available
-    try {
-      if (model) {
-        const prompt = `
-        Analyze the following technical documentation:
-
-        CONTEXT: ${cleanContent}
-
-        Provide a concise summary covering:
-        1. Core Technology Overview
-        2. Key Features
-        3. Implementation Insights
-        4. Potential Use Cases
-        `;
-
-        const generationResult = await model.generateContent(prompt);
-        const analysis = generationResult.response.text();
-
-        return NextResponse.json({
-          success: true,
-          analysis,
-          content: cleanContent,
-          metadata: {
-            url,
-            timestamp: new Date().toISOString(),
-            processingTime: Date.now() - processingStartTime,
-            contentLength: cleanContent.length
-          }
-        });
-      }
-    } catch (analysisError) {
-      logError('AI Analysis Error', analysisError);
-    }
-
-    // Fallback response
+    // Basic response
     return NextResponse.json({
       success: true,
-      analysis: 'AI analysis unavailable',
       content: cleanContent,
       metadata: {
         url,
         timestamp: new Date().toISOString(),
-        processingTime: Date.now() - processingStartTime,
+        processingTime: Date.now() - startTime,
         contentLength: cleanContent.length
       }
     });
