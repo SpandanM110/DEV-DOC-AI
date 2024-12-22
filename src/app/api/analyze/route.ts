@@ -1,189 +1,148 @@
 import { NextResponse } from 'next/server';
 import * as cheerio from 'cheerio';
-import axios from 'axios';
+import axios, { AxiosRequestConfig } from 'axios';
 import { z } from 'zod';
-import { model } from '@/lib/gemini';
 
-// Comprehensive fetch configuration
-const createFetchConfig = () => ({
-  timeout: 30000, // 30 seconds
+// Configure specifically for edge runtime
+export const config = {
+  runtime: 'edge',
+  regions: ['iad1'], // Specify deployment region if needed
+};
+
+// Fetch configuration optimized for edge runtime
+const createFetchConfig = (): AxiosRequestConfig => ({
+  timeout: 15000, // Reduced timeout for edge functions
   headers: {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-    'Accept': 'text/html,application/xhtml+xml,application/xml',
+    'User-Agent': 'Mozilla/5.0 (compatible)',
+    'Accept': 'text/html,application/xhtml+xml',
     'Accept-Language': 'en-US,en;q=0.5',
-    'Referer': 'https://www.google.com/',
-    'DNT': '1',
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'cross-site',
   },
-  validateStatus: () => true, // Accept all status codes
-  maxRedirects: 5,
-  responseType: 'text',
+  validateStatus: (status: number) => status >= 200 && status < 300,
+  maxRedirects: 3,
+  // Use arraybuffer for better edge compatibility
+  responseType: 'arraybuffer' as const
 });
 
-// URL validation schema
+// Simplified URL schema for edge runtime
 const UrlSchema = z.object({
   url: z.string().url('Invalid URL format').refine(
-    (url) => {
-      try {
-        const parsedUrl = new URL(url);
-        return ['http:', 'https:'].includes(parsedUrl.protocol);
-      } catch {
-        return false;
-      }
-    },
+    (url) => url.startsWith('http') || url.startsWith('https'),
     { message: 'Only HTTP and HTTPS protocols are allowed' }
   ),
 });
 
-// Enhanced error logging
+// Simplified error logging for edge runtime
 const logError = (context: string, error: unknown): void => {
-  console.error(`[${context}] Error Details:`,
-    error instanceof Error
-      ? {
-          message: error.message,
-          name: error.name,
-          stack: error.stack,
-        }
-      : String(error)
+  console.error(`[${context}]`, 
+    error instanceof Error ? error.message : String(error)
   );
+};
+
+// Optimized content extraction
+const extractContent = ($: cheerio.CheerioAPI): string => {
+  // Remove script tags and other non-content elements
+  $('script, style, noscript').remove();
+
+  // Prioritize main content areas
+  const selectors = [
+    'main',
+    'article',
+    '.content',
+    '#main-content',
+    'body'
+  ];
+
+  for (const selector of selectors) {
+    const content = $(selector).text().trim();
+    if (content.length > 100) {
+      return content;
+    }
+  }
+
+  return $('body').text().trim();
+};
+
+// Optimized content cleaning for edge runtime
+const cleanContent = (content: string): string => {
+  return content
+    .replace(/\s+/g, ' ')
+    .trim()
+    .substring(0, 5000); // Reduced size for edge runtime
 };
 
 export async function POST(req: Request) {
   const startTime = Date.now();
 
   try {
-    // Parse request body
-    const body = await req.json();
-
-    // Validate URL
-    const validationResult = UrlSchema.safeParse(body);
-    if (!validationResult.success) {
+    // Parse request with error handling
+    let body;
+    try {
+      body = await req.json();
+    } catch (e) {
       return NextResponse.json(
-        {
-          error: 'URL Validation Failed',
-          details: validationResult.error.errors,
-        },
+        { error: 'Invalid JSON body' },
         { status: 400 }
       );
     }
 
-    const { url } = validationResult.data;
-
-    // Enhanced fetch with comprehensive error handling
-    let responseData;
-    try {
-      const fetchConfig = createFetchConfig();
-      const response = await axios.get(url, fetchConfig);
-
-      if (response.status >= 400) {
-        return NextResponse.json(
-          {
-            error: 'Failed to fetch content',
-            details: `HTTP Status ${response.status}`,
-            url,
-          },
-          { status: 500 }
-        );
-      }
-
-      responseData = response.data;
-    } catch (fetchError) {
-      logError('Content Fetch', fetchError);
+    // Validate URL
+    const validation = UrlSchema.safeParse(body);
+    if (!validation.success) {
       return NextResponse.json(
-        {
-          error: 'Failed to fetch content',
-          details: fetchError instanceof Error
-            ? fetchError.message
-            : 'Unknown fetch error',
-          url,
-        },
-        { status: 500 }
+        { error: validation.error.errors[0].message },
+        { status: 400 }
       );
     }
 
-    // Validate response data
-    if (!responseData || typeof responseData !== 'string') {
+    const { url } = validation.data;
+
+    // Fetch content
+    const response = await axios.get(url, createFetchConfig());
+    
+    // Convert arraybuffer to text
+    const decoder = new TextDecoder('utf-8');
+    const htmlContent = decoder.decode(response.data);
+
+    // Parse and extract content
+    const $ = cheerio.load(htmlContent);
+    const extractedContent = extractContent($);
+    const processedContent = cleanContent(extractedContent);
+
+    if (processedContent.length < 100) {
       return NextResponse.json(
-        {
-          error: 'Invalid content',
-          details: 'No meaningful content received',
-          url,
-        },
+        { error: 'Insufficient content extracted' },
         { status: 422 }
       );
     }
 
-    // Content extraction with cleaner, more efficient approach
-    const $ = cheerio.load(responseData);
-
-    // Remove unnecessary elements
-    $('script, style, noscript, iframe, svg, canvas, template, ' +
-      'nav, footer, header, aside, .sidebar, .ads, .advertisement, ' +
-      '#comments, .related-content, .cookie-banner').remove();
-
-    // Define content selectors
-    const contentSelectors = [
-      'main', 'article', '.content', '.documentation',
-      '.docs-contents', '#main-content', '.page-content',
-      '.markdown-body', '#readme', 'body',
-    ];
-
-    let mainContent = '';
-    for (const selector of contentSelectors) {
-      const content = $(selector).text().trim();
-      if (content.length > 100) {
-        mainContent = content;
-        break;
-      }
-    }
-
-    // Clean and trim the content
-    const cleanContent = mainContent
-      .replace(/\s+/g, ' ')
-      .replace(/\n\s*\n/g, '\n')
-      .replace(/[^\x00-\x7F]/g, '') // Remove non-ASCII characters
-      .trim()
-      .substring(0, 8000);
-
-    // Content validation
-    if (cleanContent.length < 100) {
-      return NextResponse.json(
-        {
-          error: 'Insufficient content',
-          details: 'Unable to extract meaningful text',
-          url,
-          extractedLength: cleanContent.length,
-        },
-        { status: 422 }
-      );
-    }
-
-    // Successful response with metadata
+    // Return successful response
     return NextResponse.json({
       success: true,
-      content: cleanContent,
+      content: processedContent,
       metadata: {
         url,
         timestamp: new Date().toISOString(),
         processingTime: Date.now() - startTime,
-        contentLength: cleanContent.length,
-      },
+        contentLength: processedContent.length,
+      }
     });
-  } catch (unexpectedError) {
-    logError('Unexpected Route Error', unexpectedError);
+
+  } catch (error) {
+    logError('API Error', error);
+
+    if (axios.isAxiosError(error)) {
+      return NextResponse.json(
+        {
+          error: 'Failed to fetch content',
+          message: error.message
+        },
+        { status: error.response?.status || 500 }
+      );
+    }
+
     return NextResponse.json(
-      {
-        error: 'Internal server error',
-        details: unexpectedError instanceof Error
-          ? unexpectedError.message
-          : 'Unhandled unexpected error',
-      },
+      { error: 'Internal server error' },
       { status: 500 }
     );
   }
 }
-
-// Edge runtime for optimal performance
-export const runtime = 'edge';

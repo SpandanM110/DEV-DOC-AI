@@ -8,6 +8,10 @@ const nextConfig: NextConfig = {
   // Corrected experimental configuration
   experimental: {
     // Removed incorrect optimizePackageImports
+    serverActions: {
+      bodySizeLimit: '1mb',
+      allowedOrigins: ['*'],
+    },
   },
 
   // Security headers
