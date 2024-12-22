@@ -102,7 +102,7 @@ const cleanContent = (content: string): string => {
   return content
     .replace(/\s+/g, ' ')
     .replace(/\n\s*\n/g, '\n')
-    .replace(/[^\x20-\x7E\n]/g, '') // Keep only printable ASCII and newlines
+    .replace(/[^\x20-\x7E\n]/g, '')
     .trim()
     .substring(0, MAX_CONTENT_LENGTH);
 };
@@ -153,12 +153,11 @@ export async function POST(req: Request) {
     const decoder = new TextDecoder('utf-8');
     const htmlContent = decoder.decode(response.data);
 
-    // Parse and extract content
+    // Parse and extract content with proper Cheerio options
     const $ = cheerio.load(htmlContent, {
       decodeEntities: true,
-      xml: {
-        normalizeWhitespace: true
-      }
+      normalizeWhitespace: true,
+      xmlMode: false
     });
 
     const extractedContent = extractContent($);
