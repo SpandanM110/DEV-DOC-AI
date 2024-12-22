@@ -3,15 +3,15 @@ import * as cheerio from 'cheerio';
 import axios, { AxiosRequestConfig } from 'axios';
 import { z } from 'zod';
 
-// Configure specifically for edge runtime
+// Configure for edge runtime
 export const config = {
   runtime: 'edge',
-  regions: ['iad1'], // Specify deployment region if needed
+  regions: ['iad1'],
 };
 
-// Fetch configuration optimized for edge runtime
+// Fetch configuration
 const createFetchConfig = (): AxiosRequestConfig => ({
-  timeout: 15000, // Reduced timeout for edge functions
+  timeout: 15000,
   headers: {
     'User-Agent': 'Mozilla/5.0 (compatible)',
     'Accept': 'text/html,application/xhtml+xml',
@@ -19,11 +19,10 @@ const createFetchConfig = (): AxiosRequestConfig => ({
   },
   validateStatus: (status: number) => status >= 200 && status < 300,
   maxRedirects: 3,
-  // Use arraybuffer for better edge compatibility
   responseType: 'arraybuffer' as const
 });
 
-// Simplified URL schema for edge runtime
+// URL schema
 const UrlSchema = z.object({
   url: z.string().url('Invalid URL format').refine(
     (url) => url.startsWith('http') || url.startsWith('https'),
@@ -31,17 +30,17 @@ const UrlSchema = z.object({
   ),
 });
 
-// Simplified error logging for edge runtime
+// Error logging
 const logError = (context: string, error: unknown): void => {
   console.error(`[${context}]`, 
     error instanceof Error ? error.message : String(error)
   );
 };
 
-// Optimized content extraction
-const extractContent = ($: cheerio.CheerioAPI): string => {
+// Fixed type definition for extractContent
+const extractContent = (doc: cheerio.CheerioAPI): string => {
   // Remove script tags and other non-content elements
-  $('script, style, noscript').remove();
+  doc('script, style, noscript').remove();
 
   // Prioritize main content areas
   const selectors = [
@@ -53,32 +52,32 @@ const extractContent = ($: cheerio.CheerioAPI): string => {
   ];
 
   for (const selector of selectors) {
-    const content = $(selector).text().trim();
+    const content = doc(selector).text().trim();
     if (content.length > 100) {
       return content;
     }
   }
 
-  return $('body').text().trim();
+  return doc('body').text().trim();
 };
 
-// Optimized content cleaning for edge runtime
+// Content cleaning
 const cleanContent = (content: string): string => {
   return content
     .replace(/\s+/g, ' ')
     .trim()
-    .substring(0, 5000); // Reduced size for edge runtime
+    .substring(0, 5000);
 };
 
 export async function POST(req: Request) {
   const startTime = Date.now();
 
   try {
-    // Parse request with error handling
+    // Parse request
     let body;
     try {
       body = await req.json();
-    } catch (e) {
+    } catch (parseError) {
       return NextResponse.json(
         { error: 'Invalid JSON body' },
         { status: 400 }
@@ -103,8 +102,8 @@ export async function POST(req: Request) {
     const decoder = new TextDecoder('utf-8');
     const htmlContent = decoder.decode(response.data);
 
-    // Parse and extract content
-    const $ = cheerio.load(htmlContent);
+    // Parse and extract content with proper typing
+    const $ = cheerio.load(htmlContent, null, false);  // Use load with proper options
     const extractedContent = extractContent($);
     const processedContent = cleanContent(extractedContent);
 

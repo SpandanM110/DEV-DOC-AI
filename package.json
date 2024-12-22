@@ -14,7 +14,7 @@
     "@heroicons/react": "^2.2.0",
     "@types/firebase": "^2.4.32",
     "axios": "^1.7.9",
-    "cheerio": "^1.0.0",
+    "cheerio": "1.0.0-rc.12",
     "clsx": "^2.1.1",
     "firebase": "^11.0.2",
     "lucide-react": "^0.460.0",
