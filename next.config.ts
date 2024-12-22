@@ -5,11 +5,9 @@ const nextConfig: NextConfig = {
     domains: ["lh3.googleusercontent.com"],
   },
   
-  // Corrected experimental configuration
   experimental: {
-    // Removed incorrect optimizePackageImports
     serverActions: {
-      bodySizeLimit: '1mb',
+      bodySizeLimit: '2mb',
       allowedOrigins: ['*'],
     },
   },
@@ -20,7 +18,6 @@ const nextConfig: NextConfig = {
       {
         source: '/:path*',
         headers: [
-          // Cross-Origin policies
           {
             key: 'Cross-Origin-Opener-Policy',
             value: 'same-origin'
@@ -29,8 +26,6 @@ const nextConfig: NextConfig = {
             key: 'Cross-Origin-Embedder-Policy',
             value: 'require-corp'
           },
-          
-          // Security headers
           {
             key: 'X-XSS-Protection',
             value: '1; mode=block'
@@ -56,13 +51,25 @@ const nextConfig: NextConfig = {
     ];
   },
 
-  // Webpack configurations
+  // Enhanced webpack configuration
   webpack: (config, { isServer }) => {
-    // Optimization configurations
+    // Optimizations
     config.optimization.minimize = true;
     
     if (isServer) {
       config.optimization.concatenateModules = true;
+      config.output = {
+        ...config.output,
+        webassemblyModuleFilename: 'static/wasm/[modulehash].wasm',
+      };
+    }
+
+    // Fix punycode warning
+    if (!isServer) {
+      config.resolve.fallback = {
+        ...config.resolve.fallback,
+        punycode: false,
+      };
     }
 
     return config;

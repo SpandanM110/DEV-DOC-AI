@@ -3,26 +3,13 @@ import * as cheerio from 'cheerio';
 import axios, { AxiosRequestConfig } from 'axios';
 import { z } from 'zod';
 
-// Configure for edge runtime
+// Edge runtime configuration
 export const config = {
   runtime: 'edge',
   regions: ['iad1'],
 };
 
-// Fetch configuration
-const createFetchConfig = (): AxiosRequestConfig => ({
-  timeout: 15000,
-  headers: {
-    'User-Agent': 'Mozilla/5.0 (compatible)',
-    'Accept': 'text/html,application/xhtml+xml',
-    'Accept-Language': 'en-US,en;q=0.5',
-  },
-  validateStatus: (status: number) => status >= 200 && status < 300,
-  maxRedirects: 3,
-  responseType: 'arraybuffer' as const
-});
-
-// URL schema
+// URL validation schema
 const UrlSchema = z.object({
   url: z.string().url('Invalid URL format').refine(
     (url) => url.startsWith('http') || url.startsWith('https'),
@@ -30,30 +17,79 @@ const UrlSchema = z.object({
   ),
 });
 
-// Error logging
+// Constants for content processing
+const MIN_CONTENT_LENGTH = 100;
+const MAX_CONTENT_LENGTH = 5000;
+const TIMEOUT_MS = 15000;
+
+// Fetch configuration with proper typing
+const createFetchConfig = (): AxiosRequestConfig => ({
+  timeout: TIMEOUT_MS,
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (compatible; DocReader/1.0)',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9',
+    'Accept-Language': 'en-US,en;q=0.5',
+  },
+  validateStatus: (status: number) => status >= 200 && status < 300,
+  maxRedirects: 3,
+  responseType: 'arraybuffer' as const
+});
+
+// Error logging utility
 const logError = (context: string, error: unknown): void => {
-  console.error(`[${context}]`, 
-    error instanceof Error ? error.message : String(error)
-  );
+  const errorDetails = error instanceof Error
+    ? {
+        message: error.message,
+        name: error.name,
+        stack: error.stack,
+        ...(axios.isAxiosError(error) && {
+          status: error.response?.status,
+          data: error.response?.data
+        })
+      }
+    : String(error);
+
+  console.error(`[${context}] Error:`, errorDetails);
 };
 
-// Fixed type definition for extractContent
+// Content extraction utility
 const extractContent = (doc: cheerio.CheerioAPI): string => {
-  // Remove script tags and other non-content elements
-  doc('script, style, noscript').remove();
+  // Remove non-content elements
+  const elementsToRemove = [
+    'script',
+    'style',
+    'noscript',
+    'iframe',
+    'svg',
+    'nav',
+    'footer',
+    'header',
+    '.sidebar',
+    '.ads',
+    '.cookie-banner',
+    '#comments'
+  ];
 
-  // Prioritize main content areas
-  const selectors = [
+  elementsToRemove.forEach(selector => {
+    doc(selector).remove();
+  });
+
+  // Priority content selectors
+  const contentSelectors = [
     'main',
     'article',
     '.content',
+    '.documentation',
     '#main-content',
+    '.markdown-body',
+    '#readme',
     'body'
   ];
 
-  for (const selector of selectors) {
+  // Find first meaningful content
+  for (const selector of contentSelectors) {
     const content = doc(selector).text().trim();
-    if (content.length > 100) {
+    if (content.length > MIN_CONTENT_LENGTH) {
       return content;
     }
   }
@@ -61,55 +97,81 @@ const extractContent = (doc: cheerio.CheerioAPI): string => {
   return doc('body').text().trim();
 };
 
-// Content cleaning
+// Content cleaning utility
 const cleanContent = (content: string): string => {
   return content
     .replace(/\s+/g, ' ')
+    .replace(/\n\s*\n/g, '\n')
+    .replace(/[^\x20-\x7E\n]/g, '') // Keep only printable ASCII and newlines
     .trim()
-    .substring(0, 5000);
+    .substring(0, MAX_CONTENT_LENGTH);
 };
 
+// Main API route handler
 export async function POST(req: Request) {
   const startTime = Date.now();
 
   try {
-    // Parse request
-    let body;
-    try {
-      body = await req.json();
-    } catch (parseError) {
-      return NextResponse.json(
-        { error: 'Invalid JSON body' },
-        { status: 400 }
-      );
-    }
-
-    // Validate URL
+    // Parse and validate request body
+    const body = await req.json().catch(() => ({}));
     const validation = UrlSchema.safeParse(body);
+
     if (!validation.success) {
       return NextResponse.json(
-        { error: validation.error.errors[0].message },
+        {
+          error: 'Invalid request',
+          details: validation.error.errors[0].message
+        },
         { status: 400 }
       );
     }
 
     const { url } = validation.data;
 
-    // Fetch content
-    const response = await axios.get(url, createFetchConfig());
-    
-    // Convert arraybuffer to text
+    // Fetch content with error handling
+    let response;
+    try {
+      response = await axios.get(url, createFetchConfig());
+    } catch (error) {
+      logError('Content Fetch', error);
+      
+      if (axios.isAxiosError(error)) {
+        return NextResponse.json(
+          {
+            error: 'Failed to fetch content',
+            details: error.message,
+            status: error.response?.status
+          },
+          { status: error.response?.status || 500 }
+        );
+      }
+      
+      throw error;
+    }
+
+    // Convert response to text
     const decoder = new TextDecoder('utf-8');
     const htmlContent = decoder.decode(response.data);
 
-    // Parse and extract content with proper typing
-    const $ = cheerio.load(htmlContent, null, false);  // Use load with proper options
+    // Parse and extract content
+    const $ = cheerio.load(htmlContent, {
+      decodeEntities: true,
+      xml: {
+        normalizeWhitespace: true
+      }
+    });
+
     const extractedContent = extractContent($);
     const processedContent = cleanContent(extractedContent);
 
-    if (processedContent.length < 100) {
+    // Validate processed content
+    if (processedContent.length < MIN_CONTENT_LENGTH) {
       return NextResponse.json(
-        { error: 'Insufficient content extracted' },
+        {
+          error: 'Insufficient content',
+          details: 'Unable to extract meaningful text',
+          contentLength: processedContent.length
+        },
         { status: 422 }
       );
     }
@@ -123,24 +185,18 @@ export async function POST(req: Request) {
         timestamp: new Date().toISOString(),
         processingTime: Date.now() - startTime,
         contentLength: processedContent.length,
+        contentType: response.headers['content-type']
       }
     });
 
   } catch (error) {
-    logError('API Error', error);
-
-    if (axios.isAxiosError(error)) {
-      return NextResponse.json(
-        {
-          error: 'Failed to fetch content',
-          message: error.message
-        },
-        { status: error.response?.status || 500 }
-      );
-    }
+    logError('Route Handler', error);
 
     return NextResponse.json(
-      { error: 'Internal server error' },
+      {
+        error: 'Internal server error',
+        details: error instanceof Error ? error.message : 'Unknown error occurred'
+      },
       { status: 500 }
     );
   }
